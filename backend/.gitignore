@@ -1,0 +1,18 @@
+# Environment variables
+.env
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Caches and logs
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.log
