@@ -7,104 +7,110 @@ from typing import Generator, List, Dict, Any, Union
 
 class LLMHandler:
     def __init__(self, 
-                 model_path: str = "./models/student-buddy-gemma-policy-model-gguf/gemma-4-e2b-it.Q4_K_M.gguf",
-                 clip_path: str = "./models/student-buddy-gemma-policy-model-gguf/gemma-4-e2b-it.F16-mmproj.gguf"):
-        self.model_path = model_path
+                 base_model_path: str = "./models/gemma-4-2b-base.gguf",
+                 clip_path: str = "./models/gemma-4-2b-mmproj.gguf"):
+        self.base_model_path = base_model_path
         self.clip_path = clip_path
         
-        if not os.path.exists(model_path):
-            print(f"Warning: Model not found at {model_path}. LLM calls will fail.")
-            self.llm = None
-        else:
-            # Use Llava15ChatHandler for multi-modal support if clip_path exists
+        # Paths for LoRA adapters (to be provided later)
+        self.adapter_paths = {
+            "policy": "./models/adapters/policy.gguf",
+            "academic": "./models/adapters/academic.gguf",
+            "mental": "./models/adapters/mental.gguf",
+            "fusion": "./models/adapters/fusion.gguf"
+        }
+        
+        # Cache for loaded model instances
+        self._llm_instances = {}
+        
+        # Warm up the base model (without adapters)
+        self._get_llm(None)
+
+    def _get_llm(self, adapter_name: str = None) -> Llama:
+        """
+        Returns a Llama instance for the specified adapter. 
+        Lazily loads and caches the instances.
+        """
+        if adapter_name not in self._llm_instances:
+            if not os.path.exists(self.base_model_path):
+                print(f"Warning: Base model not found at {self.base_model_path}.")
+                return None
+            
+            lora_path = self.adapter_paths.get(adapter_name) if adapter_name else None
+            if lora_path and not os.path.exists(lora_path):
+                print(f"Warning: Adapter {adapter_name} not found at {lora_path}. Using base model.")
+                lora_path = None
+
+            print(f"Initializing model for role: {adapter_name or 'base'}...")
+            
             chat_handler = None
-            if os.path.exists(clip_path):
-                print(f"Loading vision projector from {clip_path}")
-                chat_handler = Llava15ChatHandler(clip_model_path=clip_path)
-            else:
-                print(f"Warning: Vision projector not found at {clip_path}. Multi-modal will be disabled.")
+            if os.path.exists(self.clip_path):
+                chat_handler = Llava15ChatHandler(clip_model_path=self.clip_path)
 
-            self.llm = Llama(
-                model_path=model_path,
+            self._llm_instances[adapter_name] = Llama(
+                model_path=self.base_model_path,
+                lora_path=lora_path,
                 chat_handler=chat_handler,
-                n_ctx=4096,
-                n_threads=os.cpu_count(),
-                logits_all=True # Often needed for multimodal
+                n_ctx=2048,
+                n_threads=max(1, os.cpu_count() - 1),
+                verbose=False
             )
-
-    def _prepare_messages(self, prompt: Union[str, Dict], system_prompt: str) -> List[Dict]:
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        if isinstance(prompt, str):
-            messages.append({"role": "user", "content": prompt})
-        elif isinstance(prompt, dict):
-            # Handle Gradio multimodal input: {"text": "...", "files": [...]}
-            content = []
-            if "text" in prompt and prompt["text"]:
-                content.append({"type": "text", "text": prompt["text"]})
             
-            if "files" in prompt:
-                for file_path in prompt["files"]:
-                    if os.path.exists(file_path):
-                        # Convert image to data URI
-                        with open(file_path, "rb") as f:
-                            base64_image = base64.b64encode(f.read()).decode("utf-8")
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
-                        })
-            
-            messages.append({"role": "user", "content": content})
-        
-        return messages
+        return self._llm_instances[adapter_name]
 
-    def generate_json(self, prompt: Union[str, Dict], system_prompt: str) -> Dict[str, Any]:
-        if not self.llm:
+    def _format_bare_prompt(self, prompt: str, system_prompt: str) -> str:
+        return f"{system_prompt}\n\nUser: {prompt}\nAssistant: "
+
+    def generate_json(self, prompt: Union[str, Dict], system_prompt: str, adapter: str = "policy") -> Dict[str, Any]:
+        llm = self._get_llm(adapter)
+        if not llm:
             return self._mock_json_response(prompt)
         
-        messages = self._prepare_messages(prompt, system_prompt)
+        user_msg = prompt if isinstance(prompt, str) else prompt.get("text", "")
+        raw_prompt = self._format_bare_prompt(user_msg, system_prompt)
         
         try:
-            response = self.llm.create_chat_completion(
-                messages=messages,
+            response = llm(
+                raw_prompt,
                 max_tokens=500,
-                response_format={"type": "json_object"} if "json" in system_prompt.lower() else None
+                temperature=0.1,
+                stop=["User:", "Assistant:"]
             )
             
-            text = response["choices"][0]["message"]["content"].strip()
-            
-            # Extract JSON
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            
+            text = response["choices"][0]["text"].strip()
+            if "{" in text:
+                text = text[text.find("{"):text.rfind("}")+1]
             return json.loads(text)
         except Exception as e:
-            print(f"Error in generate_json: {e}")
+            print(f"Error in generate_json ({adapter}): {e}")
             return self._mock_json_response(prompt)
 
-    def stream_generate(self, prompt: Union[str, Dict], system_prompt: str) -> Generator[str, None, None]:
-        if not self.llm:
+    def stream_generate(self, prompt: Union[str, Dict], system_prompt: str, adapter: str = None) -> Generator[str, None, None]:
+        llm = self._get_llm(adapter)
+        if not llm:
             mock_text = f"Mock response. Model not found.\nQuery: {prompt}"
             for word in mock_text.split():
                 yield word + " "
             return
 
-        messages = self._prepare_messages(prompt, system_prompt)
+        user_msg = prompt if isinstance(prompt, str) else prompt.get("text", "")
+        raw_prompt = self._format_bare_prompt(user_msg, system_prompt)
         
         try:
-            stream = self.llm.create_chat_completion(
-                messages=messages,
-                max_tokens=2048,
-                stream=True
+            stream = llm(
+                raw_prompt,
+                max_tokens=1024,
+                temperature=0.7,
+                repeat_penalty=1.1,
+                stream=True,
+                stop=["User:", "Assistant:"]
             )
             
             for chunk in stream:
-                if "content" in chunk["choices"][0]["delta"]:
-                    yield chunk["choices"][0]["delta"]["content"]
+                token = chunk["choices"][0]["text"]
+                yield token
         except Exception as e:
-            yield f"Error in stream_generate: {e}"
+            yield f"Error in stream_generate ({adapter}): {e}"
 
     def _mock_json_response(self, prompt: Any) -> Dict[str, Any]:
         return {
