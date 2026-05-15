@@ -1,7 +1,0 @@
-fastapi
-uvicorn
-google-generativeai
-outlines
-pydantic
-python-dotenv
-firebase-admin
