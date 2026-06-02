@@ -6,21 +6,55 @@ Student Buddy is a local, privacy-first desktop assistant designed to help stude
 
 ## 🏗️ System Architecture
 
-```mermaid
-graph TD
-    A[Next.js + MUI Frontend] <-->|HTTP / API Requests| B[FastAPI Backend]
-    B <-->|Exposes Chat API| C[Gradio chat_api]
-    
-    subgraph Multi-Agent Orchestrator
-        D[Policy Agent] -->|1. Route & Weight Query| E{Risk Level Check}
-        E -->|Low/Medium Risk| F[Base Model / Fusion Adapter]
-        E -->|High/Critical Risk| G[Academic Advisor Agent]
-        E -->|High/Critical Risk| H[Mental Health Advisor Agent]
-        G & H -->|2. Merge perspectives| I[Fusion Agent]
-    end
-
-    B <-->|Load / Query| Multi-Agent Orchestrator
-    B <-->|AES Encrypted Load/Save| J[(Encrypted JSON State)]
+```
+               +--------------------------------------+
+               |        Next.js + MUI Frontend        |
+               +--------------------------------------+
+                                  ^
+                                  | (HTTP / API Requests)
+                                  v
++------------------+   +--------------------------------------+
+|  Encrypted JSON  |   |           FastAPI Backend            |
+|  Student State   | <---> (Includes mounted Gradio chat_api) |
++------------------+   +--------------------------------------+
+                                  ^
+                                  | (Load / Query)
+                                  v
+         ================= Multi-Agent Orchestrator =================
+         |                                                          |
+         |                    +---------------+                     |
+         |                    | Policy Agent  |                     |
+         |                    +---------------+                     |
+         |                            |                             |
+         |                            v                             |
+         |                  [ Risk Level Check ]                    |
+         |                     /             \                      |
+         |         (Low/Medium Risk)       (High/Critical Risk)     |
+         |               /                         \                |
+         |              v                           v               |
+         |     +------------------+       +-------------------+     |
+         |     |   Fusion Agent   |       | Academic Advisor  |     |
+         |     |   (Base Model)   |       |       Agent       |     |
+         |     +------------------+       +---------+---------+     |
+         |              |                           |               |
+         |              |                           v               |
+         |              |                 +-------------------+     |
+         |              |                 |   Mental Health   |     |
+         |              |                 |   Advisor Agent   |     |
+         |              |                 +---------+---------+     |
+         |              |                           |               |
+         |              |                           v               |
+         |              |                 +-------------------+     |
+         |              |                 |   Fusion Agent    |     |
+         |              |                 | (Institution API) |     |
+         |              |                 +---------+---------+     |
+         |              |                           |               |
+         |              v                           v               |
+         |     +----------------------------------------------+     |
+         |     |          Stream Response to Frontend         |     |
+         |     +----------------------------------------------+     |
+         |                                                          |
+         ============================================================
 ```
 
 ### 1. Multi-Agent Routing & Orchestration
